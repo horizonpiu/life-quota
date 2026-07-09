@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Life Quota · 消费冷却器</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface: { DEFAULT: '#0a0e17', card: '#111827', elevated: '#1a2234' },
+            neon: { cyan: '#22d3ee', purple: '#a855f7', orange: '#fb923c' },
+          },
+          fontFamily: { mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'] },
+          boxShadow: {
+            'neon-cyan': '0 0 20px rgba(34,211,238,0.25), inset 0 1px 0 rgba(34,211,238,0.1)',
+            'neon-purple': '0 0 20px rgba(168,85,247,0.25), inset 0 1px 0 rgba(168,85,247,0.1)',
+            'neon-orange': '0 0 20px rgba(251,146,60,0.25), inset 0 1px 0 rgba(251,146,60,0.1)',
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: #050810; }
+    .grid-bg {
+      background-image:
+        linear-gradient(rgba(34,211,238,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(34,211,238,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+    @keyframes pulse-glow { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+    .animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-200 grid-bg">
+  <div id="root"></div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+
+  <script type="text/plain" id="app-source">
+    /** @jsx React.createElement */
+    /** @jsxFrag React.Fragment */
+    const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+    // ─── Lucide-style SVG Icons ───
+    const IconCoffee = ({ size = 24, className = '' }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M10 2v2"/><path d="M14 2v2"/><path d="M16 8a1 1 0 0 1 1 1v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1h14a4 4 0 1 1 0 8h-1"/><path d="M6 2v2"/>
+      </svg>
+    );
+    const IconShoppingBag = ({ size = 24, className = '' }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>
+      </svg>
+    );
+    const IconPlane = ({ size = 24, className = '' }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>
+      </svg>
+    );
+    const IconWallet = ({ size = 20, className = '' }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>
+      </svg>
+    );
+    const IconSparkles = ({ size = 20, className = '' }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>
+      </svg>
+    );
+    const IconReceipt = ({ size = 20, className = '' }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 17.5v-11"/>
+      </svg>
+    );
+    const IconCloud = ({ size = 20, className = '' }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+      </svg>
+    );
+
+    // Firestore 安全规则（Firebase Console → Firestore → 规则）：
+    // match /users/{userId}/lifeQuota/{doc} {
+    //   allow read, write: if request.auth != null && request.auth.uid == userId;
+    // }
+
+    // ─── Firebase：请替换为你自己的项目配置（Firebase Console → 项目设置 → 你的应用）───
+    const FIREBASE_CONFIG = {
+      apiKey: 'YOUR_API_KEY',
+      authDomain: 'YOUR_PROJECT.firebaseapp.com',
+      projectId: 'YOUR_PROJECT_ID',
+      storageBucket: 'YOUR_PROJECT.appspot.com',
+      messagingSenderId: 'YOUR_SENDER_ID',
+      appId: 'YOUR_APP_ID',
+    };
+
+    const FIXED_RENT = 3000;
+
+    // ─── Pool Config ───
+    const POOLS = {
+      a: { id: 'a', label: '日常消费池', unitLabel: '100元/点', anchorPrice: 100, color: 'cyan', Icon: IconCoffee },
+      b: { id: 'b', label: '改善消费池', unitLabel: '1000元/点', anchorPrice: 1000, color: 'purple', Icon: IconShoppingBag },
+      c: { id: 'c', label: '旅行消费池', unitLabel: '3000元/点', anchorPrice: 3000, color: 'orange', Icon: IconPlane },
+    };
+
+    const COLOR_MAP = {
+      cyan: { text: 'text-neon-cyan', border: 'border-neon-cyan/30', bg: 'bg-neon-cyan/10', glow: 'shadow-neon-cyan', gradient: 'from-neon-cyan/20 to-transparent' },
+      purple: { text: 'text-neon-purple', border: 'border-neon-purple/30', bg: 'bg-neon-purple/10', glow: 'shadow-neon-purple', gradient: 'from-neon-purple/20 to-transparent' },
+      orange: { text: 'text-neon-orange', border: 'border-neon-orange/30', bg: 'bg-neon-orange/10', glow: 'shadow-neon-orange', gradient: 'from-neon-orange/20 to-transparent' },
+    };
+
+    // ─── Helpers ───
+    const fmt = (n) => n.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    const fmtMoney = (n) => '¥' + fmt(Math.round(n));
+    const roundPoints = (n) => Math.max(0, Math.round(Number(n) * 100) / 100);
+    const fmtPoints = (n) => roundPoints(n).toFixed(2);
+    const fmtMoneyDec = (n) => '¥' + roundPoints(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    const STORAGE_KEY = 'life-quota-data';
+    const DEFAULTS = {
+      salary: 20000,
+      bonus: 60000,
+      takeRate: 80,
+      savingsLine: 100000,
+      poolPoints: { a: 35, b: 2, c: 1 },
+      spent: { a: 0, b: 0, c: 0 },
+      logs: [],
+    };
+
+    function normalizeState(data) {
+      if (!data) return { ...DEFAULTS, updatedAt: 0 };
+      return {
+        salary: Number(data.salary) || DEFAULTS.salary,
+        bonus: Number(data.bonus) || DEFAULTS.bonus,
+        takeRate: Number(data.takeRate) || DEFAULTS.takeRate,
+        savingsLine: Number(data.savingsLine) || DEFAULTS.savingsLine,
+        poolPoints: {
+          a: roundPoints(data.poolPoints?.a ?? DEFAULTS.poolPoints.a),
+          b: roundPoints(data.poolPoints?.b ?? DEFAULTS.poolPoints.b),
+          c: roundPoints(data.poolPoints?.c ?? DEFAULTS.poolPoints.c),
+        },
+        spent: {
+          a: roundPoints(data.spent?.a ?? 0),
+          b: roundPoints(data.spent?.b ?? 0),
+          c: roundPoints(data.spent?.c ?? 0),
+        },
+        logs: Array.isArray(data.logs) ? data.logs.slice(0, 8) : [],
+        updatedAt: Number(data.updatedAt) || 0,
+      };
+    }
+
+    function loadSaved() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return { ...DEFAULTS, updatedAt: 0 };
+        return normalizeState(JSON.parse(raw));
+      } catch {
+        return { ...DEFAULTS, updatedAt: 0 };
+      }
+    }
+
+    function saveState(state) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, updatedAt: Date.now() }));
+      } catch (_) {}
+    }
+
+    function toPersistPayload(state) {
+      return {
+        salary: state.salary,
+        bonus: state.bonus,
+        takeRate: state.takeRate,
+        savingsLine: state.savingsLine,
+        poolPoints: state.poolPoints,
+        spent: state.spent,
+        logs: state.logs,
+      };
+    }
+
+    let firebaseReady = false;
+    let auth = null;
+    let db = null;
+
+    function initFirebase() {
+      if (typeof firebase === 'undefined') return false;
+      if (FIREBASE_CONFIG.apiKey.startsWith('YOUR_')) return false;
+      try {
+        if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+        auth = firebase.auth();
+        db = firebase.firestore();
+        firebaseReady = true;
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function cloudDocRef(uid) {
+      return db.collection('users').doc(uid).collection('lifeQuota').doc('state');
+    }
+
+    function calcMonthlyGross(salary, bonus, takeRate, savingsLine) {
+      const annualPreTax = salary * 12 + bonus;
+      const annualTakeHome = annualPreTax * (takeRate / 100);
+      const annualSpendable = Math.max(0, annualTakeHome - savingsLine);
+      return annualSpendable / 12;
+    }
+
+    // ─── Animated Number ───
+    function useAnimatedNumber(target, duration = 600) {
+      const [display, setDisplay] = useState(target);
+      const current = useRef(target);
+      const raf = useRef(null);
+
+      useEffect(() => {
+        const from = current.current;
+        const to = target;
+        if (Math.abs(from - to) < 0.001) {
+          current.current = to;
+          setDisplay(to);
+          return;
+        }
+
+        const start = performance.now();
+        const diff = to - from;
+
+        const tick = (now) => {
+          const progress = Math.min((now - start) / duration, 1);
+          const eased = 1 - Math.pow(1 - progress, 3);
+          const next = from + diff * eased;
+          current.current = next;
+          setDisplay(next);
+          if (progress < 1) raf.current = requestAnimationFrame(tick);
+          else { current.current = to; setDisplay(to); }
+        };
+
+        if (raf.current) cancelAnimationFrame(raf.current);
+        raf.current = requestAnimationFrame(tick);
+        return () => { if (raf.current) cancelAnimationFrame(raf.current); };
+      }, [target, duration]);
+
+      return display;
+    }
+
+    function AnimatedNumber({ value, format = (v) => Math.round(v), className = '' }) {
+      const animated = useAnimatedNumber(value);
+      return <span className={className}>{format(animated)}</span>;
+    }
+
+    // ─── Components ───
+    function ParamInput({ label, value, onChange, suffix = '', step = 1000 }) {
+      return (
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-slate-500 uppercase tracking-wider">{label}</span>
+          <div className="relative">
+            <input
+              type="number"
+              value={value}
+              onChange={(e) => onChange(Number(e.target.value) || 0)}
+              step={step}
+              className="w-full bg-surface-elevated border border-slate-700/60 rounded-lg px-3 py-2.5 text-sm font-mono text-slate-100 focus:outline-none focus:border-neon-cyan/50 focus:ring-1 focus:ring-neon-cyan/20 transition-all"
+            />
+            {suffix && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">{suffix}</span>}
+          </div>
+        </label>
+      );
+    }
+
+    function PoolPointInput({ poolKey, points, onChange, allocatedCash }) {
+      const pool = POOLS[poolKey];
+      const colors = COLOR_MAP[pool.color];
+      return (
+        <div className={`rounded-xl border ${colors.border} ${colors.bg} p-4 transition-all duration-300`}>
+          <div className="flex items-center gap-2 mb-3">
+            <pool.Icon size={18} className={colors.text} />
+            <div>
+              <div className={`text-sm font-semibold ${colors.text}`}>{pool.label}</div>
+              <div className="text-xs text-slate-500">{pool.unitLabel}</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={points}
+              onChange={(e) => onChange(poolKey, roundPoints(e.target.value))}
+              className="w-24 bg-surface-elevated border border-slate-700/60 rounded-lg px-3 py-2 text-lg font-mono text-slate-100 focus:outline-none focus:border-neon-cyan/50 focus:ring-1 focus:ring-neon-cyan/20"
+            />
+            <span className="text-sm text-slate-500">点</span>
+            <span className="ml-auto text-xs text-slate-500">
+              分配 <AnimatedNumber value={allocatedCash} format={(v) => fmtMoney(v)} className={`font-mono font-semibold ${colors.text}`} />
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    function AnchorCard({ poolKey, poolAllocated, poolSpent }) {
+      const pool = POOLS[poolKey];
+      const colors = COLOR_MAP[pool.color];
+      const allocated = Number(poolAllocated);
+      const spent = Number(poolSpent);
+      const remaining = Math.max(0, allocated - spent);
+      const pointsLeft = remaining / pool.anchorPrice;
+
+      return (
+        <div className={`relative overflow-hidden rounded-xl border ${colors.border} bg-surface-card/90 ${colors.glow} p-3.5 transition-all duration-500`}>
+          <div className={`absolute inset-0 bg-gradient-to-br ${colors.gradient} pointer-events-none opacity-60`} />
+          <div className="relative">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className={`p-1.5 rounded-lg shrink-0 ${colors.bg} ${colors.text}`}>
+                  <pool.Icon size={14} />
+                </div>
+                <div className="min-w-0">
+                  <div className={`text-xs font-semibold truncate ${colors.text}`}>{pool.label}</div>
+                  <div className="text-[10px] text-slate-500">{pool.unitLabel}</div>
+                </div>
+              </div>
+              <div className="flex items-baseline gap-1 shrink-0 ml-2">
+                <AnimatedNumber
+                  value={pointsLeft}
+                  format={(v) => fmtPoints(v)}
+                  className={`font-mono text-2xl font-bold leading-none ${colors.text}`}
+                />
+                <span className="text-slate-500 text-[10px]">点</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-1 text-[10px] mb-2">
+              <div>
+                <div className="text-slate-500">剩余</div>
+                <AnimatedNumber value={remaining} format={(v) => fmtMoney(v)} className="font-mono text-slate-300" />
+              </div>
+              <div>
+                <div className="text-slate-500">已分配</div>
+                <span className="font-mono text-slate-400">{fmtMoney(allocated)}</span>
+              </div>
+              <div>
+                <div className="text-slate-500">已消耗</div>
+                <span className="font-mono text-slate-400">{fmtMoney(spent)}</span>
+              </div>
+            </div>
+
+            <div className="h-1 bg-slate-800/80 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${pool.color === 'cyan' ? 'bg-neon-cyan' : pool.color === 'purple' ? 'bg-neon-purple' : 'bg-neon-orange'}`}
+                style={{ width: `${allocated > 0 ? Math.min(100, (remaining / allocated) * 100) : 0}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function CloudSyncPanel({ user, syncStatus, syncError, onLogin, onRegister, onLogout, firebaseConfigured }) {
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [formError, setFormError] = useState('');
+
+      const statusMap = {
+        idle: { dot: 'bg-slate-500', text: '未连接云端' },
+        syncing: { dot: 'bg-yellow-400 animate-pulse', text: '同步中…' },
+        synced: { dot: 'bg-neon-cyan', text: '已同步' },
+        error: { dot: 'bg-red-400', text: '同步失败' },
+        offline: { dot: 'bg-slate-500', text: '仅本地保存' },
+      };
+      const status = statusMap[syncStatus] || statusMap.offline;
+
+      const handleAuth = async (mode) => {
+        setFormError('');
+        if (!email.trim() || !password) {
+          setFormError('请填写邮箱和密码');
+          return;
+        }
+        if (password.length < 6) {
+          setFormError('密码至少 6 位');
+          return;
+        }
+        setBusy(true);
+        try {
+          if (mode === 'login') await onLogin(email.trim(), password);
+          else await onRegister(email.trim(), password);
+          setPassword('');
+        } catch (err) {
+          const msg = err?.code === 'auth/email-already-in-use'
+            ? '该邮箱已注册，请直接登录'
+            : err?.code === 'auth/invalid-credential' || err?.code === 'auth/wrong-password'
+            ? '邮箱或密码错误'
+            : err?.code === 'auth/invalid-email'
+            ? '邮箱格式不正确'
+            : err?.message || '操作失败';
+          setFormError(msg);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return (
+        <section className="rounded-2xl border border-slate-700/50 bg-surface-card/80 backdrop-blur p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <IconCloud className="text-neon-cyan" />
+            <h2 className="text-lg font-semibold">云端同步</h2>
+            <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+              <span className={`w-2 h-2 rounded-full ${status.dot}`} />
+              {status.text}
+            </div>
+          </div>
+
+          {!firebaseConfigured ? (
+            <div className="text-sm text-slate-400 space-y-2 leading-relaxed">
+              <p>跨设备同步需要配置 Firebase（免费）。请按以下步骤操作：</p>
+              <ol className="list-decimal list-inside space-y-1 text-xs text-slate-500">
+                <li>打开 <span className="text-slate-400">console.firebase.google.com</span> 创建项目</li>
+                <li>启用 Authentication → 邮箱/密码登录</li>
+                <li>创建 Firestore 数据库（测试模式即可）</li>
+                <li>项目设置 → 添加 Web 应用 → 复制配置到代码中的 FIREBASE_CONFIG</li>
+                <li>Firestore 规则改为：仅登录用户可读写自己的数据（见代码注释）</li>
+              </ol>
+              <p className="text-xs text-slate-600">配置完成并重新部署后，用同一邮箱登录即可在多设备同步。</p>
+            </div>
+          ) : user ? (
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl bg-surface-elevated border border-slate-700/40 px-4 py-3">
+                <div>
+                  <div className="text-xs text-slate-500">已登录</div>
+                  <div className="text-sm text-slate-200">{user.email}</div>
+                </div>
+                <button
+                  onClick={onLogout}
+                  className="px-4 py-2 rounded-lg border border-slate-600 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
+                >
+                  退出登录
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">数据会自动同步到云端。在其他设备用同一邮箱登录即可看到相同数据。</p>
+              {syncError && <p className="text-xs text-red-400">{syncError}</p>}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-xs text-slate-500">注册或登录后，预算与记账记录会在手机、电脑之间自动同步。</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="邮箱"
+                  className="bg-surface-elevated border border-slate-700/60 rounded-lg px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-neon-cyan/50"
+                />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="密码（至少 6 位）"
+                  className="bg-surface-elevated border border-slate-700/60 rounded-lg px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-neon-cyan/50"
+                />
+              </div>
+              {(formError || syncError) && (
+                <p className="text-xs text-red-400">{formError || syncError}</p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  disabled={busy}
+                  onClick={() => handleAuth('login')}
+                  className="flex-1 py-2.5 rounded-lg bg-neon-cyan/20 border border-neon-cyan/30 text-neon-cyan text-sm font-medium hover:bg-neon-cyan/30 disabled:opacity-50"
+                >
+                  登录
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() => handleAuth('register')}
+                  className="flex-1 py-2.5 rounded-lg bg-surface-elevated border border-slate-600 text-slate-300 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
+                >
+                  注册
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    function App() {
+      const [saved] = useState(() => loadSaved());
+      const [salary, setSalary] = useState(saved.salary);
+      const [bonus, setBonus] = useState(saved.bonus);
+      const [takeRate, setTakeRate] = useState(saved.takeRate);
+      const [savingsLine, setSavingsLine] = useState(saved.savingsLine);
+      const [poolPoints, setPoolPoints] = useState(saved.poolPoints);
+      const [spent, setSpent] = useState(saved.spent);
+      const [expenseAmount, setExpenseAmount] = useState('');
+      const [expenseName, setExpenseName] = useState('');
+      const [expensePool, setExpensePool] = useState('a');
+      const [logs, setLogs] = useState(saved.logs);
+      const [user, setUser] = useState(null);
+      const [syncStatus, setSyncStatus] = useState('offline');
+      const [syncError, setSyncError] = useState('');
+      const [firebaseConfigured] = useState(() => initFirebase());
+
+      const cloudWriteRef = useRef(false);
+      const unsubRef = useRef(null);
+      const syncTimerRef = useRef(null);
+
+      const getSnapshot = useCallback(() => ({
+        salary, bonus, takeRate, savingsLine, poolPoints, spent, logs,
+      }), [salary, bonus, takeRate, savingsLine, poolPoints, spent, logs]);
+
+      const applySnapshot = useCallback((data) => {
+        const n = normalizeState(data);
+        setSalary(n.salary);
+        setBonus(n.bonus);
+        setTakeRate(n.takeRate);
+        setSavingsLine(n.savingsLine);
+        setPoolPoints(n.poolPoints);
+        setSpent(n.spent);
+        setLogs(n.logs);
+      }, []);
+
+      useEffect(() => {
+        saveState(getSnapshot());
+      }, [salary, bonus, takeRate, savingsLine, poolPoints, spent, logs, getSnapshot]);
+
+      const pushCloud = useCallback(async (uid) => {
+        if (!firebaseReady || !uid) return;
+        const payload = { ...toPersistPayload(getSnapshot()), updatedAt: Date.now() };
+        cloudWriteRef.current = true;
+        setSyncStatus('syncing');
+        try {
+          await cloudDocRef(uid).set(payload);
+          setSyncStatus('synced');
+          setSyncError('');
+        } catch (err) {
+          setSyncStatus('error');
+          setSyncError(err.message || '上传失败');
+        } finally {
+          setTimeout(() => { cloudWriteRef.current = false; }, 400);
+        }
+      }, [getSnapshot]);
+
+      useEffect(() => {
+        if (!firebaseReady || !auth) return;
+
+        const unsubAuth = auth.onAuthStateChanged(async (fbUser) => {
+          if (unsubRef.current) { unsubRef.current(); unsubRef.current = null; }
+
+          setUser(fbUser);
+          if (!fbUser) {
+            setSyncStatus('offline');
+            return;
+          }
+
+          setSyncStatus('syncing');
+          const ref = cloudDocRef(fbUser.uid);
+
+          try {
+            const snap = await ref.get();
+            const local = loadSaved();
+            if (snap.exists) {
+              const cloud = normalizeState(snap.data());
+              if (cloud.updatedAt >= local.updatedAt) applySnapshot(cloud);
+              else await pushCloud(fbUser.uid);
+            } else {
+              await pushCloud(fbUser.uid);
+            }
+
+            unsubRef.current = ref.onSnapshot((docSnap) => {
+              if (!docSnap.exists || cloudWriteRef.current) return;
+              applySnapshot(docSnap.data());
+              setSyncStatus('synced');
+            }, (err) => {
+              setSyncStatus('error');
+              setSyncError(err.message || '监听失败');
+            });
+
+            setSyncStatus('synced');
+          } catch (err) {
+            setSyncStatus('error');
+            setSyncError(err.message || '拉取失败');
+          }
+        });
+
+        return () => {
+          unsubAuth();
+          if (unsubRef.current) unsubRef.current();
+        };
+      }, [firebaseConfigured, applySnapshot, pushCloud]);
+
+      useEffect(() => {
+        if (!user || !firebaseReady) return;
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = setTimeout(() => pushCloud(user.uid), 800);
+        return () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); };
+      }, [user, salary, bonus, takeRate, savingsLine, poolPoints, spent, logs, pushCloud]);
+
+      const handleLogin = useCallback((email, password) => {
+        return auth.signInWithEmailAndPassword(email, password);
+      }, []);
+
+      const handleRegister = useCallback(async (email, password) => {
+        await auth.createUserWithEmailAndPassword(email, password);
+      }, []);
+
+      const handleLogout = useCallback(() => auth.signOut(), []);
+
+      const monthlyGross = useMemo(
+        () => calcMonthlyGross(salary, bonus, takeRate, savingsLine),
+        [salary, bonus, takeRate, savingsLine]
+      );
+      const monthlyQuota = Math.max(0, monthlyGross - FIXED_RENT);
+
+      const allocated = useMemo(() => ({
+        a: poolPoints.a * POOLS.a.anchorPrice,
+        b: poolPoints.b * POOLS.b.anchorPrice,
+        c: poolPoints.c * POOLS.c.anchorPrice,
+      }), [poolPoints]);
+
+      const balances = useMemo(() => ({
+        a: allocated.a - spent.a,
+        b: allocated.b - spent.b,
+        c: allocated.c - spent.c,
+      }), [allocated, spent]);
+
+      const totalAllocated = allocated.a + allocated.b + allocated.c;
+
+      const handlePointsChange = useCallback((key, value) => {
+        setPoolPoints((prev) => ({ ...prev, [key]: value }));
+      }, []);
+
+      const expenseNum = roundPoints(parseFloat(expenseAmount) || 0);
+      const selectedBalance = balances[expensePool];
+      const selectedAllocated = allocated[expensePool];
+      const selectedAnchorPrice = POOLS[expensePool].anchorPrice;
+      const previewPct = selectedAllocated > 0 ? (expenseNum / selectedAllocated) * 100 : 0;
+      const previewPoints = expenseNum / selectedAnchorPrice;
+      const canConfirm = expenseNum > 0 && expenseNum <= Math.max(0, selectedBalance);
+
+      const handleConfirm = () => {
+        const amount = roundPoints(parseFloat(expenseAmount) || 0);
+        if (amount <= 0 || amount > Math.max(0, balances[expensePool])) return;
+        const name = expenseName.trim();
+        setSpent((prev) => ({ ...prev, [expensePool]: prev[expensePool] + amount }));
+        setLogs((prev) => [{
+          id: Date.now(),
+          pool: expensePool,
+          amount,
+          name: name || null,
+          time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        }, ...prev].slice(0, 8));
+        setExpenseAmount('');
+        setExpenseName('');
+      };
+
+      const annualTakeHome = (salary * 12 + bonus) * (takeRate / 100);
+
+      return (
+        <div className="max-w-6xl mx-auto px-4 py-8 space-y-8">
+          {/* Header */}
+          <header className="text-center space-y-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-neon-cyan/10 border border-neon-cyan/20 text-neon-cyan text-xs uppercase tracking-widest">
+              <IconSparkles size={14} />
+              Life Quota System
+            </div>
+            <h1 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-neon-cyan via-neon-purple to-neon-orange bg-clip-text text-transparent">
+              消费冷却器
+            </h1>
+            <p className="text-slate-500 text-sm max-w-lg mx-auto">
+              先分配，后消耗 — 将月度预算切割为消费点数，每一次消费都看得见代价
+            </p>
+          </header>
+
+          {/* Points Dashboard */}
+          <section>
+            <div className="flex items-center gap-2 mb-2.5">
+              <h2 className="text-sm font-semibold text-slate-300">点数看板</h2>
+              <span className="text-[10px] text-slate-600">Points Dashboard</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              {['a', 'b', 'c'].map((key) => (
+                <AnchorCard
+                  key={key}
+                  poolKey={key}
+                  poolAllocated={allocated[key]}
+                  poolSpent={spent[key]}
+                />
+              ))}
+            </div>
+          </section>
+
+          {/* Oracle & Log */}
+          <section className="rounded-2xl border border-slate-700/50 bg-surface-card/80 backdrop-blur p-6">
+            <div className="flex items-center gap-2 mb-5">
+              <IconReceipt className="text-neon-orange" />
+              <h2 className="text-lg font-semibold">决策神谕 & 记账</h2>
+              <span className="text-xs text-slate-500 ml-1">Oracle & Log</span>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs text-slate-500 uppercase tracking-wider">输入消费金额</label>
+                  <input
+                    type="number"
+                    value={expenseAmount}
+                    onChange={(e) => setExpenseAmount(e.target.value)}
+                    onBlur={(e) => {
+                      const n = parseFloat(e.target.value);
+                      if (!isNaN(n)) setExpenseAmount(String(roundPoints(n)));
+                    }}
+                    placeholder="0.00"
+                    min="0"
+                    step="0.01"
+                    className="mt-1.5 w-full bg-surface-elevated border border-slate-700/60 rounded-lg px-4 py-3 text-lg font-mono text-slate-100 focus:outline-none focus:border-neon-orange/50 focus:ring-1 focus:ring-neon-orange/20"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 uppercase tracking-wider">费用名称（可选）</label>
+                  <input
+                    type="text"
+                    value={expenseName}
+                    onChange={(e) => setExpenseName(e.target.value)}
+                    placeholder="如：午餐、电影票"
+                    className="mt-1.5 w-full bg-surface-elevated border border-slate-700/60 rounded-lg px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-neon-orange/50 focus:ring-1 focus:ring-neon-orange/20"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-500 uppercase tracking-wider">选择扣款池</label>
+                  <div className="mt-1.5 flex flex-col sm:flex-row gap-2">
+                    {['a', 'b', 'c'].map((key) => {
+                      const pool = POOLS[key];
+                      const c = COLOR_MAP[pool.color];
+                      const active = expensePool === key;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => setExpensePool(key)}
+                          className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 rounded-xl border transition-all duration-200 ${
+                            active
+                              ? `${c.bg} ${c.border} ${c.text} ${c.glow}`
+                              : 'border-slate-700/50 bg-surface-elevated text-slate-500 hover:border-slate-600'
+                          }`}
+                        >
+                          <pool.Icon size={16} />
+                          <span className="text-xs sm:text-sm font-medium">{pool.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleConfirm}
+                  disabled={!canConfirm}
+                  className={`w-full py-3.5 rounded-xl font-semibold text-sm transition-all duration-200 ${
+                    canConfirm
+                      ? 'bg-gradient-to-r from-neon-cyan/80 via-neon-purple/80 to-neon-orange/80 text-white hover:opacity-90 shadow-lg'
+                      : 'bg-slate-800 text-slate-600 cursor-not-allowed'
+                  }`}
+                >
+                  确认记账
+                </button>
+                {expenseNum > 0 && expenseNum > Math.max(0, selectedBalance) && (
+                  <p className="text-xs text-red-400 text-center">余额不足，当前可用 {fmtMoney(Math.max(0, selectedBalance))}</p>
+                )}
+              </div>
+
+              {/* Oracle Preview */}
+              <div className={`rounded-xl border ${COLOR_MAP[POOLS[expensePool].color].border} ${COLOR_MAP[POOLS[expensePool].color].bg} p-5 min-h-[200px] flex flex-col justify-center`}>
+                <div className="text-xs uppercase tracking-widest text-slate-500 mb-3 animate-pulse-glow">✦ 神谕预览 ✦</div>
+                {expenseNum > 0 ? (
+                  <div className="space-y-4">
+                    <p className="text-slate-300 leading-relaxed">
+                      {expenseName.trim() && (
+                        <span className="text-slate-400">「{expenseName.trim()}」— </span>
+                      )}
+                      这笔 <span className={`font-mono font-bold ${COLOR_MAP[POOLS[expensePool].color].text}`}>{fmtMoneyDec(expenseNum)}</span> 的消费，
+                      将消耗 <span className={`font-bold ${COLOR_MAP[POOLS[expensePool].color].text}`}>{POOLS[expensePool].label}</span> 配额的
+                    </p>
+                    <div className="flex items-end gap-2">
+                      <span className={`font-mono text-5xl font-bold ${COLOR_MAP[POOLS[expensePool].color].text}`}>
+                        {previewPct.toFixed(1)}
+                      </span>
+                      <span className="text-2xl text-slate-400 pb-1">%</span>
+                    </div>
+                    <p className="text-slate-400 text-sm">
+                      相当于消耗 <span className={`font-mono font-semibold ${COLOR_MAP[POOLS[expensePool].color].text}`}>{fmtPoints(previewPoints)}</span> 点
+                      <span className="text-slate-600"> （{POOLS[expensePool].unitLabel}）</span>
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-slate-500 text-sm">输入金额后，神谕将揭示这笔消费的配额代价…</p>
+                )}
+              </div>
+            </div>
+
+            {logs.length > 0 && (
+              <div className="mt-6 pt-5 border-t border-slate-700/40">
+                <div className="text-xs text-slate-500 uppercase tracking-wider mb-3">最近记账</div>
+                <div className="space-y-2">
+                  {logs.map((log) => {
+                    const c = COLOR_MAP[POOLS[log.pool].color];
+                    return (
+                      <div key={log.id} className="flex items-center justify-between text-sm py-2 px-3 rounded-lg bg-surface-elevated/60">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`text-xs shrink-0 ${c.text}`}>{POOLS[log.pool].label}</span>
+                          {log.name && <span className="text-slate-300 truncate">{log.name}</span>}
+                          <span className="text-slate-500 shrink-0">{log.time}</span>
+                        </div>
+                        <span className="font-mono text-slate-300 shrink-0 ml-2">-{fmtMoneyDec(log.amount)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* Total Pool & Budget */}
+          <section className="rounded-2xl border border-slate-700/50 bg-surface-card/80 backdrop-blur p-6">
+            <div className="flex items-center gap-2 mb-5">
+              <IconWallet className="text-neon-cyan" />
+              <h2 className="text-lg font-semibold">资金盘 & 预算分配</h2>
+              <span className="text-xs text-slate-500 ml-auto">Total Pool & Budget</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+              <ParamInput label="税前月薪" value={salary} onChange={setSalary} suffix="元" step={1000} />
+              <ParamInput label="年薪奖金" value={bonus} onChange={setBonus} suffix="元" step={5000} />
+              <ParamInput label="到手率" value={takeRate} onChange={setTakeRate} suffix="%" step={1} />
+              <ParamInput label="年度储蓄红线" value={savingsLine} onChange={setSavingsLine} suffix="元" step={5000} />
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+              <div className="rounded-xl bg-surface-elevated border border-slate-700/40 p-4">
+                <div className="text-xs text-slate-500 mb-1">年到手收入</div>
+                <div className="font-mono text-lg text-slate-300">{fmtMoney(annualTakeHome)}</div>
+              </div>
+              <div className="rounded-xl bg-surface-elevated border border-slate-700/40 p-4">
+                <div className="text-xs text-slate-500 mb-1">年可消费总额</div>
+                <div className="font-mono text-lg text-slate-300">{fmtMoney(Math.max(0, annualTakeHome - savingsLine))}</div>
+              </div>
+              <div className="rounded-xl bg-surface-elevated border border-slate-700/40 p-4">
+                <div className="text-xs text-slate-500 mb-1">本月总可用额度</div>
+                <AnimatedNumber value={monthlyGross} format={(v) => fmtMoney(v)} className="font-mono text-lg text-slate-300" />
+              </div>
+              <div className="rounded-xl bg-surface-elevated border border-red-400/20 p-4">
+                <div className="text-xs text-red-400/70 mb-1">固定房租</div>
+                <div className="font-mono text-lg text-red-400/90">-{fmtMoney(FIXED_RENT)}</div>
+              </div>
+            </div>
+            <div className="rounded-xl bg-gradient-to-br from-neon-cyan/15 to-neon-purple/10 border border-neon-cyan/30 p-4 mb-6">
+              <div className="text-xs text-neon-cyan/70 mb-1">★ 本月可分配额度（扣除房租后）</div>
+              <AnimatedNumber value={monthlyQuota} format={(v) => fmtMoney(v)} className="font-mono text-2xl font-bold text-neon-cyan" />
+            </div>
+
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <IconSparkles className="text-neon-purple" size={18} />
+                <h3 className="text-sm font-semibold text-slate-300">预算点数分配</h3>
+              </div>
+              <div className={`text-xs font-mono px-2 py-1 rounded ${totalAllocated <= monthlyQuota ? 'text-neon-cyan bg-neon-cyan/10' : 'text-red-400 bg-red-400/10'}`}>
+                已分配 {fmtMoney(totalAllocated)} / {fmtMoney(monthlyQuota)}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {['a', 'b', 'c'].map((key) => (
+                <PoolPointInput
+                  key={key}
+                  poolKey={key}
+                  points={poolPoints[key]}
+                  onChange={handlePointsChange}
+                  allocatedCash={allocated[key]}
+                />
+              ))}
+            </div>
+            {totalAllocated > monthlyQuota && (
+              <p className="mt-3 text-xs text-red-400 text-center">分配总额超出本月可分配额度 {fmtMoney(totalAllocated - monthlyQuota)}</p>
+            )}
+          </section>
+
+          <CloudSyncPanel
+            user={user}
+            syncStatus={syncStatus}
+            syncError={syncError}
+            onLogin={handleLogin}
+            onRegister={handleRegister}
+            onLogout={handleLogout}
+            firebaseConfigured={firebaseConfigured}
+          />
+
+          <footer className="text-center text-xs text-slate-600 pb-4">
+            Life Quota · 先分配，后消耗 · {new Date().getFullYear()}
+          </footer>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+
+  <script>
+    (function () {
+      var source = document.getElementById('app-source');
+      var code = Babel.transform(source.textContent, {
+        presets: [['react', { runtime: 'classic', pragma: 'React.createElement', pragmaFrag: 'React.Fragment' }]],
+      }).code;
+      var s = document.createElement('script');
+      s.textContent = code;
+      document.body.appendChild(s);
+    })();
+  </script>
+</body>
+</html>
