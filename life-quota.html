@@ -188,9 +188,21 @@
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.message || `GitHub API 错误 ${res.status}`);
+        throw new Error(parseGithubError(res.status, err.message));
       }
       return res.status === 204 ? null : res.json();
+    }
+
+    function parseGithubError(status, message) {
+      const msg = (message || '').toLowerCase();
+      if (status === 401 || msg.includes('bad credentials')) {
+        return 'Token 无效或已过期。请重新生成 Token，并勾选 gist 权限（不要用 git push 的 repo Token）';
+      }
+      if (status === 403 || msg.includes('resource not accessible')) {
+        return 'Token 缺少 gist 权限。请重新生成，只勾选 gist 即可';
+      }
+      if (status === 422) return '请求格式错误，请刷新页面重试';
+      return message || `GitHub 连接失败（${status}）`;
     }
 
     async function findGistId(token) {
@@ -405,19 +417,39 @@
 
       const handleConnect = async () => {
         setFormError('');
-        const trimmed = token.trim();
-        if (!trimmed.startsWith('ghp_') && !trimmed.startsWith('github_pat_')) {
-          setFormError('请粘贴有效的 GitHub Token（以 ghp_ 或 github_pat_ 开头）');
+        const trimmed = token.trim().replace(/\s/g, '');
+        if (!trimmed) {
+          setFormError('请先粘贴 GitHub Token');
+          return;
+        }
+        if (trimmed.length < 20) {
+          setFormError('Token 似乎不完整，请重新复制完整 Token');
           return;
         }
         setBusy(true);
+        setToken(trimmed);
         try {
           await onConnect(trimmed);
-          setToken(trimmed);
         } catch (err) {
+          localStorage.removeItem(GIST_TOKEN_KEY);
+          localStorage.removeItem(GIST_ID_KEY);
           setFormError(err.message || '连接失败');
         } finally {
           setBusy(false);
+        }
+      };
+
+      const handleTokenChange = (value) => {
+        setFormError('');
+        setToken(value);
+      };
+
+      const handleTokenPaste = (e) => {
+        const pasted = (e.clipboardData.getData('text') || '').trim().replace(/\s/g, '');
+        if (pasted) {
+          e.preventDefault();
+          setToken(pasted);
+          setFormError('');
         }
       };
 
@@ -463,26 +495,35 @@
                 使用你已登录的 GitHub 账号同步（无需 Firebase）。生成 Token 时勾选 <strong className="text-slate-400">gist</strong> 权限即可。
               </p>
               <ol className="list-decimal list-inside space-y-1 text-xs text-slate-500">
-                <li>打开 github.com/settings/tokens → Generate new token (classic)</li>
-                <li>勾选 <span className="text-slate-400">gist</span> → 生成并复制 Token</li>
-                <li>粘贴到下方 → 点击「连接云端」</li>
+                <li>打开 github.com/settings/tokens → <strong className="text-slate-400">Generate new token (classic)</strong></li>
+                <li>只勾选 <span className="text-neon-cyan font-semibold">gist</span>（不要只勾 repo）</li>
+                <li>粘贴 Token 到下方输入框</li>
+                <li className="text-neon-orange font-medium">⚠️ 粘贴后必须点击「连接云端」按钮</li>
               </ol>
               <input
                 type="password"
                 value={token}
-                onChange={(e) => setToken(e.target.value)}
+                onChange={(e) => handleTokenChange(e.target.value)}
+                onPaste={handleTokenPaste}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !busy) handleConnect(); }}
                 placeholder="ghp_xxxxxxxxxxxx"
                 className="w-full bg-surface-elevated border border-slate-700/60 rounded-lg px-3 py-2.5 text-sm font-mono text-slate-100 focus:outline-none focus:border-neon-cyan/50"
               />
+              {token.trim().length > 0 && !formError && !syncError && (
+                <p className="text-xs text-neon-cyan">✓ 已输入 {token.trim().length} 个字符，请点击下方按钮连接</p>
+              )}
               {(formError || syncError) && (
-                <p className="text-xs text-red-400">{formError || syncError}</p>
+                <div className="rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2.5 text-sm text-red-300">
+                  {formError || syncError}
+                </div>
               )}
               <button
-                disabled={busy}
+                type="button"
+                disabled={busy || !token.trim()}
                 onClick={handleConnect}
-                className="w-full py-2.5 rounded-lg bg-neon-cyan/20 border border-neon-cyan/30 text-neon-cyan text-sm font-medium hover:bg-neon-cyan/30 disabled:opacity-50"
+                className="w-full py-3 rounded-lg bg-neon-cyan/25 border border-neon-cyan/40 text-neon-cyan text-sm font-semibold hover:bg-neon-cyan/35 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
               >
-                {busy ? '连接中…' : '连接云端'}
+                {busy ? '连接中，请稍候…' : '👉 连接云端'}
               </button>
             </div>
           )}
@@ -563,6 +604,8 @@
         const id = localStorage.getItem(GIST_ID_KEY);
         if (!token) return;
         syncWithCloud(token, id).catch((err) => {
+          localStorage.removeItem(GIST_TOKEN_KEY);
+          localStorage.removeItem(GIST_ID_KEY);
           setSyncStatus('error');
           setSyncError(err.message || '自动连接失败');
         });
