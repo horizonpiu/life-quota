@@ -175,6 +175,42 @@
       };
     }
 
+    const SITE_URL = 'https://horizonpiu.github.io/life-quota/';
+
+    function normalizePoolParam(raw) {
+      const map = { a: 'a', b: 'b', c: 'c', '1': 'a', '2': 'b', '3': 'c', daily: 'a', improve: 'b', travel: 'c' };
+      return map[(raw || 'a').toLowerCase()] || 'a';
+    }
+
+    function parseShortcutParams() {
+      const p = new URLSearchParams(window.location.search);
+      const amountRaw = p.get('amount') ?? p.get('amt');
+      const nameRaw = p.get('name') ?? p.get('n') ?? '';
+      const confirmRaw = (p.get('confirm') ?? p.get('c') ?? '').toLowerCase();
+      if (!amountRaw && !nameRaw) return null;
+      return {
+        amount: amountRaw ? String(roundPoints(amountRaw)) : '',
+        pool: normalizePoolParam(p.get('pool') ?? p.get('p')),
+        name: decodeURIComponent(nameRaw).trim(),
+        confirm: ['1', 'true', 'yes', 'y'].includes(confirmRaw),
+      };
+    }
+
+    function clearShortcutParams() {
+      if (window.location.search) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
+
+    function buildShortcutUrl({ amount = '[金额]', pool = 'a', name = '[备注]', confirm = true }) {
+      const q = new URLSearchParams();
+      if (amount) q.set('amount', String(amount));
+      q.set('pool', pool);
+      if (name) q.set('name', String(name));
+      if (confirm) q.set('confirm', '1');
+      return SITE_URL + '?' + q.toString();
+    }
+
     async function githubFetch(path, token, options = {}) {
       const res = await fetch(`https://api.github.com${path}`, {
         ...options,
@@ -401,6 +437,59 @@
       );
     }
 
+    function ShortcutGuide() {
+      const [copied, setCopied] = useState('');
+      const templates = [
+        { label: '日常消费 · 自动记账', url: buildShortcutUrl({ pool: 'a', amount: '[金额]', name: '[备注]' }) },
+        { label: '改善消费 · 自动记账', url: buildShortcutUrl({ pool: 'b', amount: '[金额]', name: '[备注]' }) },
+        { label: '仅预填 · 手动确认', url: buildShortcutUrl({ pool: 'a', amount: '[金额]', name: '[备注]', confirm: false }) },
+      ];
+      const copy = async (text, key) => {
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(key);
+          setTimeout(() => setCopied(''), 2000);
+        } catch (_) {
+          window.prompt('复制此链接到快捷指令：', text);
+        }
+      };
+      return (
+        <details className="rounded-xl border border-slate-700/50 bg-surface-elevated/40 p-4 mb-5 group">
+          <summary className="text-sm text-slate-400 cursor-pointer list-none flex items-center gap-2">
+            <span className="text-neon-orange">⚡</span>
+            iOS 快捷指令设置指南
+            <span className="text-xs text-slate-600 ml-auto group-open:hidden">展开</span>
+          </summary>
+          <div className="mt-4 space-y-3 text-xs text-slate-500 leading-relaxed">
+            <p><strong className="text-slate-400">步骤 1：</strong>打开 iPhone「快捷指令」→ 右上角 + 新建</p>
+            <p><strong className="text-slate-400">步骤 2：</strong>添加「要求输入」→ 类型选「数字」，提示填「消费金额」</p>
+            <p><strong className="text-slate-400">步骤 3（可选）：</strong>再添加「要求输入」→ 类型「文本」，提示填「备注」</p>
+            <p><strong className="text-slate-400">步骤 4：</strong>添加「打开 URL」，粘贴链接，将 <code className="text-slate-400">35</code> 替换为快捷指令变量「提供的输入」</p>
+            <p className="text-neon-cyan/80">测试链接（可直接在浏览器打开）：</p>
+            <code className="block text-[10px] text-slate-500 break-all font-mono mb-2">{buildShortcutUrl({ amount: 35, pool: 'a', name: '午餐' })}</code>
+            <div className="space-y-2">
+              {templates.map((t) => (
+                <div key={t.label} className="rounded-lg bg-surface-elevated border border-slate-700/40 p-3">
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <span className="text-slate-400 font-medium">{t.label}</span>
+                    <button
+                      type="button"
+                      onClick={() => copy(t.url, t.label)}
+                      className="shrink-0 px-2 py-1 rounded text-neon-cyan border border-neon-cyan/30 hover:bg-neon-cyan/10"
+                    >
+                      {copied === t.label ? '已复制' : '复制链接'}
+                    </button>
+                  </div>
+                  <code className="block text-[10px] text-slate-600 break-all font-mono">{t.url}</code>
+                </div>
+              ))}
+            </div>
+            <p className="text-slate-600">URL 参数：<code className="text-slate-500">amount</code> 金额 · <code className="text-slate-500">pool</code> 池子(a/b/c) · <code className="text-slate-500">name</code> 备注 · <code className="text-slate-500">confirm=1</code> 自动记账</p>
+          </div>
+        </details>
+      );
+    }
+
     function CloudSyncPanel({ connected, syncStatus, syncError, onConnect, onDisconnect, onPull }) {
       const [token, setToken] = useState(() => localStorage.getItem(GIST_TOKEN_KEY) || '');
       const [busy, setBusy] = useState(false);
@@ -546,11 +635,13 @@
       const [syncConnected, setSyncConnected] = useState(false);
       const [syncStatus, setSyncStatus] = useState('offline');
       const [syncError, setSyncError] = useState('');
+      const [prefillNotice, setPrefillNotice] = useState('');
 
       const githubTokenRef = useRef('');
       const gistIdRef = useRef('');
       const syncTimerRef = useRef(null);
       const cloudWriteRef = useRef(false);
+      const shortcutHandled = useRef(false);
 
       const getSnapshot = useCallback(() => ({
         salary, bonus, takeRate, savingsLine, poolPoints, spent, logs,
@@ -689,21 +780,68 @@
       const previewPoints = expenseNum / selectedAnchorPrice;
       const canConfirm = expenseNum > 0 && expenseNum <= Math.max(0, selectedBalance);
 
-      const handleConfirm = () => {
-        const amount = roundPoints(parseFloat(expenseAmount) || 0);
-        if (amount <= 0 || amount > Math.max(0, balances[expensePool])) return;
-        const name = expenseName.trim();
-        setSpent((prev) => ({ ...prev, [expensePool]: prev[expensePool] + amount }));
+      const performExpenseLog = useCallback((amount, pool, name) => {
+        const amt = roundPoints(amount);
+        if (amt <= 0) return { ok: false, reason: 'invalid' };
+        const balance = allocated[pool] - spent[pool];
+        if (amt > Math.max(0, balance)) return { ok: false, reason: 'balance' };
+        const label = (name || '').trim();
+        setSpent((prev) => ({ ...prev, [pool]: prev[pool] + amt }));
         setLogs((prev) => [{
           id: Date.now(),
-          pool: expensePool,
-          amount,
-          name: name || null,
+          pool,
+          amount: amt,
+          name: label || null,
           time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
         }, ...prev].slice(0, 8));
         setExpenseAmount('');
         setExpenseName('');
+        return { ok: true, amount: amt, pool, name: label };
+      }, [allocated, spent]);
+
+      const handleConfirm = () => {
+        performExpenseLog(parseFloat(expenseAmount) || 0, expensePool, expenseName);
       };
+
+      useEffect(() => {
+        if (shortcutHandled.current) return;
+        const params = parseShortcutParams();
+        if (!params) return;
+        shortcutHandled.current = true;
+
+        setExpensePool(params.pool);
+        if (params.name) setExpenseName(params.name);
+        if (params.amount) setExpenseAmount(params.amount);
+        clearShortcutParams();
+
+        setTimeout(() => {
+          document.getElementById('oracle-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 80);
+
+        if (params.confirm && params.amount) {
+          const timer = setTimeout(() => {
+            const result = performExpenseLog(params.amount, params.pool, params.name);
+            if (result.ok) {
+              setPrefillNotice(`✓ 快捷指令已自动记账 ${fmtMoneyDec(result.amount)}（${POOLS[result.pool].label}）`);
+            } else if (result.reason === 'balance') {
+              setExpenseAmount(params.amount);
+              if (params.name) setExpenseName(params.name);
+              setExpensePool(params.pool);
+              setPrefillNotice('余额不足，已填入表单，请换池或手动确认');
+            }
+          }, 350);
+          return () => clearTimeout(timer);
+        }
+        if (params.amount) {
+          setPrefillNotice('已从快捷指令填入，请确认记账');
+        }
+      }, [performExpenseLog]);
+
+      useEffect(() => {
+        if (!prefillNotice) return;
+        const t = setTimeout(() => setPrefillNotice(''), 6000);
+        return () => clearTimeout(t);
+      }, [prefillNotice]);
 
       const annualTakeHome = (salary * 12 + bonus) * (takeRate / 100);
 
@@ -742,12 +880,20 @@
           </section>
 
           {/* Oracle & Log */}
-          <section className="rounded-2xl border border-slate-700/50 bg-surface-card/80 backdrop-blur p-6">
+          <section id="oracle-section" className="rounded-2xl border border-slate-700/50 bg-surface-card/80 backdrop-blur p-6">
             <div className="flex items-center gap-2 mb-5">
               <IconReceipt className="text-neon-orange" />
               <h2 className="text-lg font-semibold">决策神谕 & 记账</h2>
               <span className="text-xs text-slate-500 ml-1">Oracle & Log</span>
             </div>
+
+            {prefillNotice && (
+              <div className="mb-4 rounded-lg border border-neon-orange/30 bg-neon-orange/10 px-4 py-2.5 text-sm text-neon-orange">
+                {prefillNotice}
+              </div>
+            )}
+
+            <ShortcutGuide />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="space-y-4">
