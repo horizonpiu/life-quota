@@ -44,9 +44,6 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 
   <script type="text/plain" id="app-source">
     /** @jsx React.createElement */
@@ -90,20 +87,10 @@
       </svg>
     );
 
-    // Firestore 安全规则（Firebase Console → Firestore → 规则）：
-    // match /users/{userId}/lifeQuota/{doc} {
-    //   allow read, write: if request.auth != null && request.auth.uid == userId;
-    // }
-
-    // ─── Firebase：请替换为你自己的项目配置（Firebase Console → 项目设置 → 你的应用）───
-    const FIREBASE_CONFIG = {
-      apiKey: 'YOUR_API_KEY',
-      authDomain: 'YOUR_PROJECT.firebaseapp.com',
-      projectId: 'YOUR_PROJECT_ID',
-      storageBucket: 'YOUR_PROJECT.appspot.com',
-      messagingSenderId: 'YOUR_SENDER_ID',
-      appId: 'YOUR_APP_ID',
-    };
+    const GIST_TOKEN_KEY = 'life-quota-github-token';
+    const GIST_ID_KEY = 'life-quota-gist-id';
+    const GIST_DESC = 'life-quota-sync-v1';
+    const GIST_FILENAME = 'life-quota-data.json';
 
     const FIXED_RENT = 3000;
 
@@ -188,26 +175,63 @@
       };
     }
 
-    let firebaseReady = false;
-    let auth = null;
-    let db = null;
-
-    function initFirebase() {
-      if (typeof firebase === 'undefined') return false;
-      if (FIREBASE_CONFIG.apiKey.startsWith('YOUR_')) return false;
-      try {
-        if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-        auth = firebase.auth();
-        db = firebase.firestore();
-        firebaseReady = true;
-        return true;
-      } catch (_) {
-        return false;
+    async function githubFetch(path, token, options = {}) {
+      const res = await fetch(`https://api.github.com${path}`, {
+        ...options,
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${token}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+          ...(options.headers || {}),
+        },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `GitHub API 错误 ${res.status}`);
       }
+      return res.status === 204 ? null : res.json();
     }
 
-    function cloudDocRef(uid) {
-      return db.collection('users').doc(uid).collection('lifeQuota').doc('state');
+    async function findGistId(token) {
+      const gists = await githubFetch('/gists?per_page=100', token);
+      const found = (gists || []).find((g) => g.description === GIST_DESC);
+      return found ? found.id : null;
+    }
+
+    async function createGist(token, data) {
+      const payload = { ...toPersistPayload(data), updatedAt: Date.now() };
+      const created = await githubFetch('/gists', token, {
+        method: 'POST',
+        body: JSON.stringify({
+          description: GIST_DESC,
+          public: false,
+          files: { [GIST_FILENAME]: { content: JSON.stringify(payload) } },
+        }),
+      });
+      return created.id;
+    }
+
+    async function pullGist(token, gistId) {
+      const gist = await githubFetch(`/gists/${gistId}`, token);
+      const file = gist.files[GIST_FILENAME];
+      if (!file) return null;
+      let content = file.content;
+      if (!content && file.raw_url) {
+        const r = await fetch(file.raw_url);
+        content = await r.text();
+      }
+      return content ? normalizeState(JSON.parse(content)) : null;
+    }
+
+    async function pushGist(token, gistId, snapshot) {
+      const payload = { ...toPersistPayload(snapshot), updatedAt: Date.now() };
+      await githubFetch(`/gists/${gistId}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          files: { [GIST_FILENAME]: { content: JSON.stringify(payload) } },
+        }),
+      });
     }
 
     function calcMonthlyGross(salary, bonus, takeRate, savingsLine) {
@@ -365,14 +389,13 @@
       );
     }
 
-    function CloudSyncPanel({ user, syncStatus, syncError, onLogin, onRegister, onLogout, firebaseConfigured }) {
-      const [email, setEmail] = useState('');
-      const [password, setPassword] = useState('');
+    function CloudSyncPanel({ connected, syncStatus, syncError, onConnect, onDisconnect, onPull }) {
+      const [token, setToken] = useState(() => localStorage.getItem(GIST_TOKEN_KEY) || '');
       const [busy, setBusy] = useState(false);
       const [formError, setFormError] = useState('');
 
       const statusMap = {
-        idle: { dot: 'bg-slate-500', text: '未连接云端' },
+        idle: { dot: 'bg-slate-500', text: '未连接' },
         syncing: { dot: 'bg-yellow-400 animate-pulse', text: '同步中…' },
         synced: { dot: 'bg-neon-cyan', text: '已同步' },
         error: { dot: 'bg-red-400', text: '同步失败' },
@@ -380,30 +403,19 @@
       };
       const status = statusMap[syncStatus] || statusMap.offline;
 
-      const handleAuth = async (mode) => {
+      const handleConnect = async () => {
         setFormError('');
-        if (!email.trim() || !password) {
-          setFormError('请填写邮箱和密码');
-          return;
-        }
-        if (password.length < 6) {
-          setFormError('密码至少 6 位');
+        const trimmed = token.trim();
+        if (!trimmed.startsWith('ghp_') && !trimmed.startsWith('github_pat_')) {
+          setFormError('请粘贴有效的 GitHub Token（以 ghp_ 或 github_pat_ 开头）');
           return;
         }
         setBusy(true);
         try {
-          if (mode === 'login') await onLogin(email.trim(), password);
-          else await onRegister(email.trim(), password);
-          setPassword('');
+          await onConnect(trimmed);
+          setToken(trimmed);
         } catch (err) {
-          const msg = err?.code === 'auth/email-already-in-use'
-            ? '该邮箱已注册，请直接登录'
-            : err?.code === 'auth/invalid-credential' || err?.code === 'auth/wrong-password'
-            ? '邮箱或密码错误'
-            : err?.code === 'auth/invalid-email'
-            ? '邮箱格式不正确'
-            : err?.message || '操作失败';
-          setFormError(msg);
+          setFormError(err.message || '连接失败');
         } finally {
           setBusy(false);
         }
@@ -420,73 +432,58 @@
             </div>
           </div>
 
-          {!firebaseConfigured ? (
-            <div className="text-sm text-slate-400 space-y-2 leading-relaxed">
-              <p>跨设备同步需要配置 Firebase（免费）。请按以下步骤操作：</p>
-              <ol className="list-decimal list-inside space-y-1 text-xs text-slate-500">
-                <li>打开 <span className="text-slate-400">console.firebase.google.com</span> 创建项目</li>
-                <li>启用 Authentication → 邮箱/密码登录</li>
-                <li>创建 Firestore 数据库（测试模式即可）</li>
-                <li>项目设置 → 添加 Web 应用 → 复制配置到代码中的 FIREBASE_CONFIG</li>
-                <li>Firestore 规则改为：仅登录用户可读写自己的数据（见代码注释）</li>
-              </ol>
-              <p className="text-xs text-slate-600">配置完成并重新部署后，用同一邮箱登录即可在多设备同步。</p>
-            </div>
-          ) : user ? (
+          {connected ? (
             <div className="space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl bg-surface-elevated border border-slate-700/40 px-4 py-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl bg-surface-elevated border border-neon-cyan/20 px-4 py-3">
                 <div>
-                  <div className="text-xs text-slate-500">已登录</div>
-                  <div className="text-sm text-slate-200">{user.email}</div>
+                  <div className="text-xs text-slate-500">已连接 GitHub 云端</div>
+                  <div className="text-sm text-neon-cyan">数据自动同步至私有 Gist</div>
                 </div>
-                <button
-                  onClick={onLogout}
-                  className="px-4 py-2 rounded-lg border border-slate-600 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
-                >
-                  退出登录
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={onPull}
+                    className="px-3 py-2 rounded-lg border border-slate-600 text-xs text-slate-300 hover:bg-slate-800"
+                  >
+                    立即拉取
+                  </button>
+                  <button
+                    onClick={onDisconnect}
+                    className="px-3 py-2 rounded-lg border border-slate-600 text-xs text-slate-300 hover:bg-slate-800"
+                  >
+                    断开
+                  </button>
+                </div>
               </div>
-              <p className="text-xs text-slate-500">数据会自动同步到云端。在其他设备用同一邮箱登录即可看到相同数据。</p>
+              <p className="text-xs text-slate-500">在其他设备打开网页，粘贴<strong className="text-slate-400">同一个 Token</strong> 并点「连接云端」，即可同步数据。</p>
               {syncError && <p className="text-xs text-red-400">{syncError}</p>}
             </div>
           ) : (
             <div className="space-y-3">
-              <p className="text-xs text-slate-500">注册或登录后，预算与记账记录会在手机、电脑之间自动同步。</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="邮箱"
-                  className="bg-surface-elevated border border-slate-700/60 rounded-lg px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-neon-cyan/50"
-                />
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="密码（至少 6 位）"
-                  className="bg-surface-elevated border border-slate-700/60 rounded-lg px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-neon-cyan/50"
-                />
-              </div>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                使用你已登录的 GitHub 账号同步（无需 Firebase）。生成 Token 时勾选 <strong className="text-slate-400">gist</strong> 权限即可。
+              </p>
+              <ol className="list-decimal list-inside space-y-1 text-xs text-slate-500">
+                <li>打开 github.com/settings/tokens → Generate new token (classic)</li>
+                <li>勾选 <span className="text-slate-400">gist</span> → 生成并复制 Token</li>
+                <li>粘贴到下方 → 点击「连接云端」</li>
+              </ol>
+              <input
+                type="password"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="ghp_xxxxxxxxxxxx"
+                className="w-full bg-surface-elevated border border-slate-700/60 rounded-lg px-3 py-2.5 text-sm font-mono text-slate-100 focus:outline-none focus:border-neon-cyan/50"
+              />
               {(formError || syncError) && (
                 <p className="text-xs text-red-400">{formError || syncError}</p>
               )}
-              <div className="flex gap-2">
-                <button
-                  disabled={busy}
-                  onClick={() => handleAuth('login')}
-                  className="flex-1 py-2.5 rounded-lg bg-neon-cyan/20 border border-neon-cyan/30 text-neon-cyan text-sm font-medium hover:bg-neon-cyan/30 disabled:opacity-50"
-                >
-                  登录
-                </button>
-                <button
-                  disabled={busy}
-                  onClick={() => handleAuth('register')}
-                  className="flex-1 py-2.5 rounded-lg bg-surface-elevated border border-slate-600 text-slate-300 text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
-                >
-                  注册
-                </button>
-              </div>
+              <button
+                disabled={busy}
+                onClick={handleConnect}
+                className="w-full py-2.5 rounded-lg bg-neon-cyan/20 border border-neon-cyan/30 text-neon-cyan text-sm font-medium hover:bg-neon-cyan/30 disabled:opacity-50"
+              >
+                {busy ? '连接中…' : '连接云端'}
+              </button>
             </div>
           )}
         </section>
@@ -505,20 +502,21 @@
       const [expenseName, setExpenseName] = useState('');
       const [expensePool, setExpensePool] = useState('a');
       const [logs, setLogs] = useState(saved.logs);
-      const [user, setUser] = useState(null);
+      const [syncConnected, setSyncConnected] = useState(false);
       const [syncStatus, setSyncStatus] = useState('offline');
       const [syncError, setSyncError] = useState('');
-      const [firebaseConfigured] = useState(() => initFirebase());
 
-      const cloudWriteRef = useRef(false);
-      const unsubRef = useRef(null);
+      const githubTokenRef = useRef('');
+      const gistIdRef = useRef('');
       const syncTimerRef = useRef(null);
+      const cloudWriteRef = useRef(false);
 
       const getSnapshot = useCallback(() => ({
         salary, bonus, takeRate, savingsLine, poolPoints, spent, logs,
       }), [salary, bonus, takeRate, savingsLine, poolPoints, spent, logs]);
 
       const applySnapshot = useCallback((data) => {
+        cloudWriteRef.current = true;
         const n = normalizeState(data);
         setSalary(n.salary);
         setBonus(n.bonus);
@@ -527,93 +525,94 @@
         setPoolPoints(n.poolPoints);
         setSpent(n.spent);
         setLogs(n.logs);
+        setTimeout(() => { cloudWriteRef.current = false; }, 500);
       }, []);
 
       useEffect(() => {
         saveState(getSnapshot());
       }, [salary, bonus, takeRate, savingsLine, poolPoints, spent, logs, getSnapshot]);
 
-      const pushCloud = useCallback(async (uid) => {
-        if (!firebaseReady || !uid) return;
-        const payload = { ...toPersistPayload(getSnapshot()), updatedAt: Date.now() };
-        cloudWriteRef.current = true;
+      const syncWithCloud = useCallback(async (token, existingGistId) => {
+        setSyncStatus('syncing');
+        setSyncError('');
+        let gistId = existingGistId || localStorage.getItem(GIST_ID_KEY);
+        if (!gistId) {
+          gistId = await findGistId(token);
+          if (!gistId) gistId = await createGist(token, getSnapshot());
+        }
+        localStorage.setItem(GIST_TOKEN_KEY, token);
+        localStorage.setItem(GIST_ID_KEY, gistId);
+        githubTokenRef.current = token;
+        gistIdRef.current = gistId;
+
+        const local = loadSaved();
+        const cloud = await pullGist(token, gistId);
+        if (cloud && cloud.updatedAt > local.updatedAt) {
+          applySnapshot(cloud);
+        } else if (!cloud || local.updatedAt >= cloud.updatedAt) {
+          await pushGist(token, gistId, getSnapshot());
+        }
+
+        setSyncConnected(true);
+        setSyncStatus('synced');
+        return gistId;
+      }, [getSnapshot, applySnapshot]);
+
+      useEffect(() => {
+        const token = localStorage.getItem(GIST_TOKEN_KEY);
+        const id = localStorage.getItem(GIST_ID_KEY);
+        if (!token) return;
+        syncWithCloud(token, id).catch((err) => {
+          setSyncStatus('error');
+          setSyncError(err.message || '自动连接失败');
+        });
+      }, []);
+
+      useEffect(() => {
+        if (!syncConnected || !githubTokenRef.current || !gistIdRef.current) return;
+        if (cloudWriteRef.current) return;
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = setTimeout(async () => {
+          setSyncStatus('syncing');
+          try {
+            await pushGist(githubTokenRef.current, gistIdRef.current, getSnapshot());
+            setSyncStatus('synced');
+            setSyncError('');
+          } catch (err) {
+            setSyncStatus('error');
+            setSyncError(err.message || '上传失败');
+          }
+        }, 1000);
+        return () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); };
+      }, [syncConnected, salary, bonus, takeRate, savingsLine, poolPoints, spent, logs, getSnapshot]);
+
+      const handleConnect = useCallback(async (token) => {
+        await syncWithCloud(token, null);
+      }, [syncWithCloud]);
+
+      const handleDisconnect = useCallback(() => {
+        localStorage.removeItem(GIST_TOKEN_KEY);
+        localStorage.removeItem(GIST_ID_KEY);
+        githubTokenRef.current = '';
+        gistIdRef.current = '';
+        setSyncConnected(false);
+        setSyncStatus('offline');
+        setSyncError('');
+      }, []);
+
+      const handlePull = useCallback(async () => {
+        if (!githubTokenRef.current || !gistIdRef.current) return;
         setSyncStatus('syncing');
         try {
-          await cloudDocRef(uid).set(payload);
+          const cloud = await pullGist(githubTokenRef.current, gistIdRef.current);
+          if (cloud) applySnapshot(cloud);
           setSyncStatus('synced');
           setSyncError('');
         } catch (err) {
           setSyncStatus('error');
-          setSyncError(err.message || '上传失败');
-        } finally {
-          setTimeout(() => { cloudWriteRef.current = false; }, 400);
+          setSyncError(err.message || '拉取失败');
         }
-      }, [getSnapshot]);
-
-      useEffect(() => {
-        if (!firebaseReady || !auth) return;
-
-        const unsubAuth = auth.onAuthStateChanged(async (fbUser) => {
-          if (unsubRef.current) { unsubRef.current(); unsubRef.current = null; }
-
-          setUser(fbUser);
-          if (!fbUser) {
-            setSyncStatus('offline');
-            return;
-          }
-
-          setSyncStatus('syncing');
-          const ref = cloudDocRef(fbUser.uid);
-
-          try {
-            const snap = await ref.get();
-            const local = loadSaved();
-            if (snap.exists) {
-              const cloud = normalizeState(snap.data());
-              if (cloud.updatedAt >= local.updatedAt) applySnapshot(cloud);
-              else await pushCloud(fbUser.uid);
-            } else {
-              await pushCloud(fbUser.uid);
-            }
-
-            unsubRef.current = ref.onSnapshot((docSnap) => {
-              if (!docSnap.exists || cloudWriteRef.current) return;
-              applySnapshot(docSnap.data());
-              setSyncStatus('synced');
-            }, (err) => {
-              setSyncStatus('error');
-              setSyncError(err.message || '监听失败');
-            });
-
-            setSyncStatus('synced');
-          } catch (err) {
-            setSyncStatus('error');
-            setSyncError(err.message || '拉取失败');
-          }
-        });
-
-        return () => {
-          unsubAuth();
-          if (unsubRef.current) unsubRef.current();
-        };
-      }, [firebaseConfigured, applySnapshot, pushCloud]);
-
-      useEffect(() => {
-        if (!user || !firebaseReady) return;
-        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-        syncTimerRef.current = setTimeout(() => pushCloud(user.uid), 800);
-        return () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current); };
-      }, [user, salary, bonus, takeRate, savingsLine, poolPoints, spent, logs, pushCloud]);
-
-      const handleLogin = useCallback((email, password) => {
-        return auth.signInWithEmailAndPassword(email, password);
-      }, []);
-
-      const handleRegister = useCallback(async (email, password) => {
-        await auth.createUserWithEmailAndPassword(email, password);
-      }, []);
-
-      const handleLogout = useCallback(() => auth.signOut(), []);
+      }, [applySnapshot]);
 
       const monthlyGross = useMemo(
         () => calcMonthlyGross(salary, bonus, takeRate, savingsLine),
@@ -890,13 +889,12 @@
           </section>
 
           <CloudSyncPanel
-            user={user}
+            connected={syncConnected}
             syncStatus={syncStatus}
             syncError={syncError}
-            onLogin={handleLogin}
-            onRegister={handleRegister}
-            onLogout={handleLogout}
-            firebaseConfigured={firebaseConfigured}
+            onConnect={handleConnect}
+            onDisconnect={handleDisconnect}
+            onPull={handlePull}
           />
 
           <footer className="text-center text-xs text-slate-600 pb-4">
